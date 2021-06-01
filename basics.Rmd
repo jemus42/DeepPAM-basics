@@ -1,0 +1,321 @@
+---
+title: "DeepPAM Basics"
+author: "Lukas"
+date: "`r Sys.time()`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=TRUE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  message=FALSE, error=TRUE, warning=FALSE
+)
+
+# Modeling
+library(keras)
+library(mgcv)
+
+# Convenience
+library(dplyr)
+library(broom)
+library(ggplot2)
+
+# Sacrificing a goat to the python env
+reticulate::use_condaenv("r-reticulate", required = TRUE)
+reticulate:::ensure_python_initialized()
+tensorflow::tf_config()
+```
+
+# Linear Models
+
+```{r lm-setup}
+set.seed(17)
+n <- 700
+x1 <- runif(n, 0, 10)
+x2 <- runif(n, -2, 2)
+x3 <- sample(c(0, 1), n, replace = TRUE)
+
+y <- 1 + 2 * x1 + 3 * x2 + 4 * x3 + rnorm(n, 0, 1)
+df <- data.frame(y, x1, x2, x3)
+```
+
+## `lm()`
+
+```{r lm-lm-fit}
+lm_lm <- lm(y ~ x1 + x2 + x3, data = df)
+
+tidy(lm_lm)
+glance(lm_lm)
+```
+
+## `keras`
+
+- Single layer NN
+- Linear regression layer with bias
+
+```{r lm-nn-fit, cache=TRUE}
+lm_nn <- keras_model_sequential(name = "LM") %>%
+  layer_dense(units = 1, activation = "linear", use_bias = TRUE, name = "Regression")
+
+lm_nn %>%
+  compile(
+    loss = "mse",
+    optimizer = optimizer_rmsprop(),
+    metrics = NULL
+  )
+
+lm_nn %>%
+  fit(
+    as.matrix(df[, 2:4]), df$y,
+    epochs = 100,
+    batch_size = 8,
+    validation_split = 0.2,
+    verbose = TRUE
+  )
+
+lm_nn
+
+get_weights(lm_nn)
+```
+
+Close enough?
+
+# Generalised Additive Models
+
+```{r gam-setup}
+set.seed(17)
+n <- 700
+x1 <- runif(n, 0, 10)
+x2 <- runif(n, -2, 2)
+x3 <- sample(c(0, 1), n, replace = TRUE)
+
+predictor <- -3 + 0.05 * x1^2 + x2 + x3
+prob <- exp(predictor) / (1 + exp(predictor))
+y <- rbinom(n, 1, prob)
+df <- data.frame(y, x1, x2, x3)
+```
+
+## `mgcv()`
+
+> Use the mgcv package to estimate a GAM with linear effects of x2 and x3 and a smooth x1 effect.
+
+```{r gam-mgcv-fit}
+gam_mgcv <- gam(y ~ s(x1, fx = FALSE) + x2 + x3, family = binomial(link = "logit"), data = df)
+
+gam_mgcv$coefficients
+# smoothing param for later
+gam_mgcv$sp
+# S matrix
+gam_mgcv$smooth[[1]]$S
+```
+
+Takeaway: I need to do some GAM-reading.
+
+## `keras`
+
+> Neglect the penalisation of the smooth eﬀect and construct an equivalent neural network with keras and tensorflow. Fit it.
+
+- Two parallel layers for linear / smooth effects? 🤔
+- [Relevant Keras docs maybe](https://keras.rstudio.com/articles/functional_api.html)
+
+```{r gam-keras-fit}
+# Define inputs, two linear + 1 smooth effect
+linear_input <- layer_input(shape = c(2), name = "linear_in")
+smooth_input <- layer_input(shape = c(1), name = "smooth_in")
+
+# Define intermediate outputs
+linear_out <- linear_input %>%
+  layer_dense(units = 1, activation = "linear", name = "linear_effect")
+
+# Until I figure out what to use for a smooth effect here
+# mgcv shows 9 components of the smooth effects, but just 1 neuron though
+smooth_out <- smooth_input %>%
+  layer_dense(units = 1, activation = "linear", name = "smooth_effect")
+
+# layer_concatenate sums up intermediate outputs
+# sigmoid activation for binary outcome
+combined_out <- layer_concatenate(c(linear_out, smooth_out)) %>%
+  #layer_lambda(f = function(x) k_sum(x, axis = 2)) %>%
+  layer_dense(units = 1, activation = "sigmoid", name = "output_prob")
+
+# Combine the above to a keras model
+gam_nn <- keras_model(
+  inputs = c(linear_input, smooth_input),
+  outputs = c(combined_out)
+)
+
+gam_nn %>%
+  compile(
+    loss = "binary_crossentropy", # That's Bernoulli logLik right?
+    optimizer = optimizer_rmsprop(),
+    metrics = NULL
+  )
+
+gam_nn
+
+gam_nn %>%
+  fit(
+    # First linear input (x2, x3), then smooth input (x1)
+    x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])),
+    y = df$y,
+    epochs = 50,
+    batch_size = 8,
+    validation_split = 0.2,
+    verbose = TRUE
+  )
+
+get_weights(gam_nn)
+```
+
+Smells overparameterized?
+
+## Plot comparion
+
+> Use the plot function to plot the mgcv model’s smooth term.
+
+```{r gam-plots}
+plot(gam_mgcv, select = 1, resid = TRUE, pch = 1, cex = 1, shade = TRUE)
+```
+
+> Create an equivalent plot for the neural network’s smooth term. You will need to predict over a grid of x1. Bring both plots together in a single plot.
+
+```{r}
+
+```
+
+
+## `keras` w/ Penalisation
+
+> Read [here](https://m-clark.github.io/generalized-additive-models/technical.html) about the penalisation of smooth terms in mgcv. Search through the mgcv model for all components of the penalisation.
+
+> Apply the proper penalisation to the equivalent neural network and refitt the network. Compare the resulting smooth terms with meaningful plots (see 3)). Use the extracted components from 4) You will find the code below helpful.
+
+```r
+kernel_regularizer = function(x) {
+  k_mean(k_batch_dot(x, k_dot(
+  tf$constant(???, dtype = "float64"), x), axes = 2))
+}
+```
+
+From Wood 2017:
+
+$$||\boldsymbol{y} - \boldsymbol{X}\boldsymbol{\beta}||^2 + \underbrace{\lambda \boldsymbol{\beta}^\top \boldsymbol{S} \boldsymbol{\beta}}_\text{Regularization term to reconstruct}$$
+
+Current regularizer form:
+
+$$\begin{aligned}
+\mathtt{mean(batch\_dot(x, dot(???, x))) } & \overset{?}{=}
+\frac{1}{n} \sum \sum_{\mathrm{batch}} \boldsymbol{\beta} \cdot (??? \cdot \boldsymbol{\beta})
+\end{aligned}$$
+
+Making a D and S matrix
+
+```{r}
+make_Dmat <-function(k = 8) {
+  diff(diag(k), differences = 2)
+}
+# S := D^T D
+make_Smat <- function(k = 8) t(make_Dmat(k)) %*% make_Dmat(k)
+
+# Or just take the one from mgcv as I'm presumably supposed to
+# Also multiply with lambda for convenience
+gam_Smat <- gam_mgcv$sp * gam_mgcv$smooth[[1]]$S[[1]]
+```
+
+
+```{r}
+smooth_out_reg <- smooth_input %>%
+  layer_dense(
+    units = 1, activation = "linear", name = "smooth_effect",
+    kernel_regularizer = function(x) {
+      # with only one neuron the shapes don't fit though o_O
+      k_mean(k_batch_dot(x,
+        k_dot(
+          tensorflow::tf$constant(gam_Smat, dtype = "float32"),
+          x
+        ),
+      axes = 2
+      ))
+    }
+  )
+
+combined_out_reg <- layer_concatenate(c(linear_out, smooth_out_reg)) %>%
+  #layer_lambda(f = function(x) k_sum(x, axis = 2)) %>%
+  layer_dense(units = 1, activation = "sigmoid", name = "output_prob")
+
+# Combine the above to a keras model
+gam_nn_reg <- keras_model(
+  inputs = c(linear_input, smooth_input),
+  outputs = c(combined_out_reg)
+)
+```
+
+Does it do things?
+
+```{r}
+gam_nn_reg %>%
+  compile(
+    loss = "binary_crossentropy", # That's Bernoulli logLik right?
+    optimizer = optimizer_rmsprop(),
+    metrics = NULL
+  )
+
+gam_nn_reg
+
+gam_nn_reg %>%
+  fit(
+    # First linear input (x2, x3), then smooth input (x1)
+    x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])),
+    y = df$y,
+    epochs = 20,
+    batch_size = 8,
+    validation_split = 0.2,
+    verbose = TRUE
+  )
+```
+
+What do the predictions look like?
+
+```{r}
+yhat_gam_mgcv <- predict(gam_mgcv, newdata = df, type = "link")
+yhat_gam_mgcv <- exp(yhat_gam_mgcv) / (1 + exp(yhat_gam_mgcv))
+yhat_gam_nn <- predict(gam_nn, x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])))
+yhat_gam_nn_reg <- predict(gam_nn_reg, x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])))
+
+yhat_df <- tibble(
+  y = df$y,
+  yhat_gam_mgcv = yhat_gam_mgcv,
+  yhat_gam_nn = as.numeric(yhat_gam_nn),
+  yhat_gam_nn_reg = as.numeric(yhat_gam_nn_reg)
+)
+
+# yhat_df %>%
+#   ggplot(aes(x = yhat_gam_nn, y = yhat_gam_nn_reg)) +
+#   geom_point(shape = 21)
+#
+# yhat_df %>%
+#   ggplot(aes(x = yhat_gam_mgcv, y = yhat_gam_nn_reg)) +
+#   geom_point(shape = 21)
+
+yhat_df %>%
+  tidyr::pivot_longer(cols = contains("_nn")) %>%
+  ggplot(aes(x = yhat_gam_mgcv, y = value, fill = name, color = name)) +
+  geom_point(shape = 21) +
+  geom_rug() +
+  scale_color_brewer(palette = "Set1", aesthetics = c("color", "fill")) +
+  labs(
+    title = "Predictions compared to mgcv model",
+    y = "Predicted Probability",
+    color = "Model", fill = "Model"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+I can't tell if that's good or bad 🙃
+
