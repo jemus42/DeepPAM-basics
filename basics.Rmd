@@ -210,7 +210,7 @@ Current regularizer form:
 
 $$\begin{aligned}
 \mathtt{mean(batch\_dot(x, dot(???, x))) } & \overset{?}{=}
-\frac{1}{n} \sum \sum_{\mathrm{batch}} \boldsymbol{\beta} \cdot (??? \cdot \boldsymbol{\beta})
+\frac{1}{n} \sum \sum_{\mathrm{batch}} \boldsymbol{\beta} \cdot (\lambda \boldsymbol{S} \cdot \boldsymbol{\beta})
 \end{aligned}$$
 
 Making a D and S matrix
