@@ -158,16 +158,18 @@ gam_nn %>%
 
 gam_nn
 
-gam_nn %>%
+history_unreg <- gam_nn %>%
   fit(
-    # First linear input (x2, x3), then smooth input (x1)
+    # First linear input (x2, x3), then smooth input (x1), but use mgcv output
     x = list(as.matrix(df[, 3:4]), model.matrix(gam_mgcv)[, 4:12]),
     y = df$y,
-    epochs = 200,
+    epochs = 500,
     batch_size = 32,
     validation_split = 0.2,
-    verbose = TRUE
+    verbose = interactive()
   )
+
+plot(history_unreg)
 
 get_weights(gam_nn)
 ```
@@ -279,16 +281,18 @@ gam_nn_reg %>%
 
 gam_nn_reg
 
-gam_nn_reg %>%
+history_reg <- gam_nn_reg %>%
   fit(
     # First linear input (x2, x3), then smooth input (x1)
     x = list(as.matrix(df[, 3:4]), model.matrix(gam_mgcv)[, 4:12]),
     y = df$y,
-    epochs = 200,
+    epochs = 500,
     batch_size = 16,
     validation_split = 0.2,
-    verbose = TRUE
+    verbose = interactive()
   )
+
+plot(history_reg)
 
 get_weights(gam_nn_reg)
 ```

@@ -242,7 +242,7 @@ div.tocify {
 
 <h1 class="title toc-ignore">DeepPAM Basics</h1>
 <h4 class="author">Lukas</h4>
-<h4 class="date">2021-06-07 18:13:07</h4>
+<h4 class="date">2021-06-07 18:25:34</h4>
 
 </div>
 
@@ -459,37 +459,39 @@ gam_nn</code></pre>
 ## Trainable params: 12
 ## Non-trainable params: 0
 ## ________________________________________________________________________________</code></pre>
-<pre class="r"><code>gam_nn %&gt;%
+<pre class="r"><code>history_unreg &lt;- gam_nn %&gt;%
   fit(
-    # First linear input (x2, x3), then smooth input (x1)
+    # First linear input (x2, x3), then smooth input (x1), but use mgcv output
     x = list(as.matrix(df[, 3:4]), model.matrix(gam_mgcv)[, 4:12]),
     y = df$y,
-    epochs = 200,
+    epochs = 500,
     batch_size = 32,
     validation_split = 0.2,
-    verbose = TRUE
+    verbose = interactive()
   )
 
-get_weights(gam_nn)</code></pre>
+plot(history_unreg)</code></pre>
+<p><img src="basics_files/figure-html/gam-keras-fit-1.png" width="672" /></p>
+<pre class="r"><code>get_weights(gam_nn)</code></pre>
 <pre><code>## [[1]]
-##           [,1]
-## [1,] 1.1195856
-## [2,] 0.7238031
+##          [,1]
+## [1,] 1.166848
+## [2,] 1.082154
 ## 
 ## [[2]]
-## [1] -1.017889
+## [1] -1.259862
 ## 
 ## [[3]]
 ##              [,1]
-##  [1,]  0.52285141
-##  [2,]  0.28750712
-##  [3,]  0.41107199
-##  [4,]  0.18188684
-##  [5,]  0.16799061
-##  [6,] -0.05286731
-##  [7,]  0.43142590
-##  [8,] -0.23235863
-##  [9,] -0.10990276</code></pre>
+##  [1,]  0.25794482
+##  [2,]  0.21479347
+##  [3,] -0.13971181
+##  [4,]  0.62765634
+##  [5,] -0.14168829
+##  [6,]  0.03759041
+##  [7,]  0.70733076
+##  [8,]  0.02966038
+##  [9,]  0.61160189</code></pre>
 </div>
 <div id="plot-comparion" class="section level2" number="2.3">
 <h2><span class="header-section-number">2.3</span> Plot comparion</h2>
@@ -601,37 +603,39 @@ gam_nn_reg</code></pre>
 ## Trainable params: 12
 ## Non-trainable params: 0
 ## ________________________________________________________________________________</code></pre>
-<pre class="r"><code>gam_nn_reg %&gt;%
+<pre class="r"><code>history_reg &lt;- gam_nn_reg %&gt;%
   fit(
     # First linear input (x2, x3), then smooth input (x1)
     x = list(as.matrix(df[, 3:4]), model.matrix(gam_mgcv)[, 4:12]),
     y = df$y,
-    epochs = 200,
+    epochs = 500,
     batch_size = 16,
     validation_split = 0.2,
-    verbose = TRUE
+    verbose = interactive()
   )
 
-get_weights(gam_nn_reg)</code></pre>
+plot(history_reg)</code></pre>
+<p><img src="basics_files/figure-html/gam-keras-fit-penalized-1.png" width="672" /></p>
+<pre class="r"><code>get_weights(gam_nn_reg)</code></pre>
 <pre><code>## [[1]]
 ##          [,1]
-## [1,] 1.142495
-## [2,] 1.054271
+## [1,] 1.155161
+## [2,] 1.116054
 ## 
 ## [[2]]
-## [1] -1.279392
+## [1] -1.3282
 ## 
 ## [[3]]
 ##                [,1]
-##  [1,]  0.0019381738
-##  [2,] -0.0035180959
-##  [3,]  0.0003470610
-##  [4,] -0.0040851720
-##  [5,]  0.0005828778
-##  [6,] -0.0039991857
-##  [7,] -0.0001550479
-##  [8,] -0.0171021596
-##  [9,]  1.3893942833</code></pre>
+##  [1,] -0.0013827397
+##  [2,] -0.0036996331
+##  [3,] -0.0002525857
+##  [4,] -0.0027773255
+##  [5,]  0.0011506539
+##  [6,] -0.0029286104
+##  [7,]  0.0008859261
+##  [8,] -0.0161576923
+##  [9,]  1.4087466002</code></pre>
 <p>What do the predictions look like?</p>
 <pre class="r"><code>gam_nn_reg_preds &lt;- predict(gam_nn_reg, x = list(as.matrix(lpmat[, 2:3]), lpmat[, 4:12]))
 
