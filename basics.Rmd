@@ -3,10 +3,11 @@ title: "DeepPAM Basics"
 author: "Lukas"
 date: "`r Sys.time()`"
 output:
-  html_document:
+  html_document: 
     toc: yes
     toc_float: yes
     number_sections: yes
+    self_contained: no
 editor_options:
   chunk_output_type: console
 ---
@@ -72,7 +73,7 @@ lm_nn %>%
 lm_nn %>%
   fit(
     as.matrix(df[, 2:4]), df$y,
-    epochs = 100,
+    epochs = 50,
     batch_size = 8,
     validation_split = 0.2,
     verbose = TRUE
@@ -111,7 +112,7 @@ gam_mgcv$coefficients
 # smoothing param for later
 gam_mgcv$sp
 # S matrix
-gam_mgcv$smooth[[1]]$S
+gam_mgcv$smooth[[1]]$S[[1]]
 ```
 
 Takeaway: I need to do some GAM-reading.
@@ -126,7 +127,7 @@ Takeaway: I need to do some GAM-reading.
 ```{r gam-keras-fit}
 # Define inputs, two linear + 1 smooth effect
 linear_input <- layer_input(shape = c(2), name = "linear_in")
-smooth_input <- layer_input(shape = c(1), name = "smooth_in")
+smooth_input <- layer_input(shape = c(9), name = "smooth_in")
 
 # Define intermediate outputs
 linear_out <- linear_input %>%
@@ -135,13 +136,12 @@ linear_out <- linear_input %>%
 # Until I figure out what to use for a smooth effect here
 # mgcv shows 9 components of the smooth effects, but just 1 neuron though
 smooth_out <- smooth_input %>%
-  layer_dense(units = 1, activation = "linear", name = "smooth_effect")
+  layer_dense(units = 1, activation = "linear", name = "smooth_effect", use_bias = FALSE)
 
 # layer_concatenate sums up intermediate outputs
 # sigmoid activation for binary outcome
-combined_out <- layer_concatenate(c(linear_out, smooth_out)) %>%
-  #layer_lambda(f = function(x) k_sum(x, axis = 2)) %>%
-  layer_dense(units = 1, activation = "sigmoid", name = "output_prob")
+combined_out <- layer_add(c(linear_out, smooth_out)) %>%
+  layer_activation(activation = "sigmoid", name = "output_prob")
 
 # Combine the above to a keras model
 gam_nn <- keras_model(
@@ -161,10 +161,10 @@ gam_nn
 gam_nn %>%
   fit(
     # First linear input (x2, x3), then smooth input (x1)
-    x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])),
+    x = list(as.matrix(df[, 3:4]), model.matrix(gam_mgcv)[, 4:12]),
     y = df$y,
-    epochs = 50,
-    batch_size = 8,
+    epochs = 200,
+    batch_size = 32,
     validation_split = 0.2,
     verbose = TRUE
   )
@@ -172,20 +172,34 @@ gam_nn %>%
 get_weights(gam_nn)
 ```
 
-Smells overparameterized?
 
 ## Plot comparion
 
 > Use the plot function to plot the mgcv model’s smooth term.
 
-```{r gam-plots}
+```{r gam-mgcv-plot}
 plot(gam_mgcv, select = 1, resid = TRUE, pch = 1, cex = 1, shade = TRUE)
 ```
 
 > Create an equivalent plot for the neural network’s smooth term. You will need to predict over a grid of x1. Bring both plots together in a single plot.
 
-```{r}
+```{r gam-keras-plot}
+test_df <- tibble::tibble(
+  y = rep(0, 100),
+  x1 = seq(-10, 10, length.out = 100),
+  x2 = rep(0, 100),
+  x3 = rep(0, 100)
+)
 
+lpmat <- predict(gam_mgcv, newdata = test_df, type = "lpmatrix")
+gam_nn_preds <- predict(gam_nn, x = list(as.matrix(lpmat[, 2:3]), lpmat[, 4:12]))
+
+test_df %>%
+  mutate(yhat = as.numeric(gam_nn_preds)) %>%
+  ggplot(aes(x = x1, y = yhat)) + 
+  geom_point() +
+  geom_path() +
+  theme_minimal()
 ```
 
 
@@ -215,12 +229,12 @@ $$\begin{aligned}
 
 Making a D and S matrix
 
-```{r}
-make_Dmat <-function(k = 8) {
-  diff(diag(k), differences = 2)
-}
-# S := D^T D
-make_Smat <- function(k = 8) t(make_Dmat(k)) %*% make_Dmat(k)
+```{r gam-Smat}
+# make_Dmat <-function(k = 8) {
+#   diff(diag(k), differences = 2)
+# }
+# # S := D^T D
+# make_Smat <- function(k = 8) t(make_Dmat(k)) %*% make_Dmat(k)
 
 # Or just take the one from mgcv as I'm presumably supposed to
 # Also multiply with lambda for convenience
@@ -228,12 +242,11 @@ gam_Smat <- gam_mgcv$sp * gam_mgcv$smooth[[1]]$S[[1]]
 ```
 
 
-```{r}
+```{r gam-keras-build-penalized}
 smooth_out_reg <- smooth_input %>%
   layer_dense(
-    units = 1, activation = "linear", name = "smooth_effect",
+    units = 1, activation = "linear", use_bias = FALSE, name = "smooth_effect",
     kernel_regularizer = function(x) {
-      # with only one neuron the shapes don't fit though o_O
       k_mean(k_batch_dot(x,
         k_dot(
           tensorflow::tf$constant(gam_Smat, dtype = "float32"),
@@ -244,9 +257,8 @@ smooth_out_reg <- smooth_input %>%
     }
   )
 
-combined_out_reg <- layer_concatenate(c(linear_out, smooth_out_reg)) %>%
-  #layer_lambda(f = function(x) k_sum(x, axis = 2)) %>%
-  layer_dense(units = 1, activation = "sigmoid", name = "output_prob")
+combined_out_reg <- layer_add(c(linear_out, smooth_out_reg)) %>%
+  layer_activation(activation = "sigmoid", name = "output_prob")
 
 # Combine the above to a keras model
 gam_nn_reg <- keras_model(
@@ -257,7 +269,7 @@ gam_nn_reg <- keras_model(
 
 Does it do things?
 
-```{r}
+```{r gam-keras-fit-penalized, cache=TRUE}
 gam_nn_reg %>%
   compile(
     loss = "binary_crossentropy", # That's Bernoulli logLik right?
@@ -270,52 +282,36 @@ gam_nn_reg
 gam_nn_reg %>%
   fit(
     # First linear input (x2, x3), then smooth input (x1)
-    x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])),
+    x = list(as.matrix(df[, 3:4]), model.matrix(gam_mgcv)[, 4:12]),
     y = df$y,
-    epochs = 20,
-    batch_size = 8,
+    epochs = 200,
+    batch_size = 16,
     validation_split = 0.2,
     verbose = TRUE
   )
+
+get_weights(gam_nn_reg)
 ```
 
 What do the predictions look like?
 
-```{r}
-yhat_gam_mgcv <- predict(gam_mgcv, newdata = df, type = "link")
-yhat_gam_mgcv <- exp(yhat_gam_mgcv) / (1 + exp(yhat_gam_mgcv))
-yhat_gam_nn <- predict(gam_nn, x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])))
-yhat_gam_nn_reg <- predict(gam_nn_reg, x = list(as.matrix(df[, 3:4]), as.matrix(df[, 2])))
+```{r gam-keras-plots}
+gam_nn_reg_preds <- predict(gam_nn_reg, x = list(as.matrix(lpmat[, 2:3]), lpmat[, 4:12]))
 
-yhat_df <- tibble(
-  y = df$y,
-  yhat_gam_mgcv = yhat_gam_mgcv,
-  yhat_gam_nn = as.numeric(yhat_gam_nn),
-  yhat_gam_nn_reg = as.numeric(yhat_gam_nn_reg)
-)
-
-# yhat_df %>%
-#   ggplot(aes(x = yhat_gam_nn, y = yhat_gam_nn_reg)) +
-#   geom_point(shape = 21)
-#
-# yhat_df %>%
-#   ggplot(aes(x = yhat_gam_mgcv, y = yhat_gam_nn_reg)) +
-#   geom_point(shape = 21)
-
-yhat_df %>%
-  tidyr::pivot_longer(cols = contains("_nn")) %>%
-  ggplot(aes(x = yhat_gam_mgcv, y = value, fill = name, color = name)) +
-  geom_point(shape = 21) +
-  geom_rug() +
-  scale_color_brewer(palette = "Set1", aesthetics = c("color", "fill")) +
+test_df %>%
+  select(x1) %>%
+  mutate(
+    unregularized = as.numeric(gam_nn_preds),
+    regularized = as.numeric(gam_nn_reg_preds)
+  ) %>%
+  tidyr::pivot_longer(cols = ends_with("ized")) %>%
+  ggplot(aes(x = x1, y = value, color = name)) + 
+  scale_color_brewer(palette = "Dark2") +
+  geom_path(size = 2) +
   labs(
-    title = "Predictions compared to mgcv model",
-    y = "Predicted Probability",
-    color = "Model", fill = "Model"
-  ) +
+    title = "Regularized and unregularized smooth effects fit as NN",
+    x = "x1", y = "s(x)", color = ""
+    ) +
   theme_minimal() +
   theme(legend.position = "top")
 ```
-
-I can't tell if that's good or bad 🙃
-
