@@ -1,0 +1,154 @@
+---
+title: "pamtools"
+author: "Lukas"
+date: "`r Sys.time()`"
+output:
+  html_document: 
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    self_contained: no
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=TRUE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  message=FALSE, error=TRUE, warning=FALSE
+)
+
+# Modeling
+library(keras)
+library(mgcv)
+
+# Convenience
+library(dplyr)
+library(broom)
+library(ggplot2)
+
+# Sacrificing a goat to the python env
+reticulate::use_condaenv("r-reticulate", required = TRUE)
+reticulate:::ensure_python_initialized()
+tensorflow::tf_config()
+
+# pamtools I guess?
+library(pammtools)
+library(survival)
+
+# data("veteran", package = "survival") # load veteran data
+veteran <- survival::veteran
+
+```
+# Data + Model Setup
+
+Reference models from <https://adibender.github.io/pammtools/articles/basics.html#subset-with-unique-event-times> and <https://adibender.github.io/pammtools/articles/basics.html#piece-wise-exponential-additive-model>.
+
+```{r data-setup}
+# remove ties to illustrate equivalence with Cox approach
+vetu <- filter(veteran, !duplicated(time))
+
+ped_vetu <- vetu %>%
+  as_ped(Surv(time, status)~., cut = unique(vetu$time), id = "id")
+
+## PEM (Pois GLM)
+pem_age <- glm(ped_status ~ interval - 1 + age, data = ped_vetu,
+    family = poisson(), offset = offset)
+
+## CoxPH
+cph_age <- coxph(Surv(time, status) ~ age, data = vetu)
+
+## PAM
+pam_age <- gam(ped_status ~ s(tend) + age, data = ped_vetu,
+    family = "poisson", offset = offset)
+
+cbind(
+    pam = coef(pam_age)["age"],
+    pem = coef(pem_age)["age"],
+    cox = coef(cph_age)["age"])
+```
+
+Extracting the useful stuff from the PEM 
+
+```{r pam-extractions}
+# smoothing param for later
+pam_lambda <- pam_age$sp
+
+# S matrix
+pam_S <- pam_age$smooth[[1]]$S[[1]]
+
+# > "David und mir ist aufgefallen, dass man im Falle vom PAM noch das Lambda durch nrow(ped) teilen muss" ...like this?
+pam_Slambda <- (pam_lambda / nrow(ped_vetu)) * pam_S
+
+# Smooth terms from model matrix
+pam_modelmat_smooth <- model.matrix(pam_age)[, grepl(pattern = "^s\\(", x = colnames(model.matrix(pam_age)))]
+```
+
+
+# Network Arch
+
+```{r pam-nn}
+# Define inputs, 1 linear + 1 smooth effect (shape 9)
+linear_input <- layer_input(shape = c(1), name = "linear_in")
+smooth_input <- layer_input(shape = c(9), name = "smooth_in")
+
+# Define intermediate outputs
+linear_out <- linear_input %>%
+  layer_dense(units = 1, activation = "linear", name = "linear_effect")
+
+# Smooth out w/ bias to avoid multicollinearity
+smooth_out_reg <- smooth_input %>%
+  layer_dense(
+    units = 1, activation = "linear", use_bias = FALSE, name = "smooth_effect",
+    kernel_regularizer = function(x) {
+      k_mean(k_batch_dot(x,
+        k_dot(
+          tensorflow::tf$constant(pam_Slambda, dtype = "float32"),
+          x
+        ),
+      axes = 2
+      ))
+    }
+  )
+
+# Input combination w/ simple adding
+# exponential activation b/c Poisson -> log link?
+combined_out_reg <- layer_add(c(linear_out, smooth_out_reg)) %>%
+  layer_activation(activation = "exponential", name = "output")
+
+# Combine the above to a keras model
+pam_nn <- keras_model(
+  inputs = c(linear_input, smooth_input),
+  outputs = c(combined_out_reg)
+)
+```
+
+## Model Compilation + Fit
+
+Not sure about loss and target yet, gotta do risk set thinking
+
+```{r pam-nn-fit, eval = FALSE}
+pam_nn %>%
+  compile(
+    loss = "poisson", 
+    optimizer = optimizer_adam(),
+    metrics = "mae"
+  )
+
+pam_nn
+
+history <- pam_nn %>%
+  fit(
+    # linear effect for age, smooth effect of tend via model matrix
+    x = list(as.matrix(ped_vetu[, "age"]), pam_modelmat_smooth),
+    y =  ,
+    epochs = 100,
+    batch_size = 32,
+    validation_split = 0.2,
+    verbose = interactive()
+  )
+
+plot(history)
+
+get_weights(pam_nn)
+```
+
