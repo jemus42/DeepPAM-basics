@@ -27,7 +27,8 @@ library(broom)
 library(ggplot2)
 
 # Sacrificing a goat to the python env
-reticulate::use_condaenv("r-reticulate", required = TRUE)
+#reticulate::use_condaenv("r-reticulate", required = TRUE)
+reticulate::use_condaenv("renv/python/r-reticulate/bin/python")
 reticulate:::ensure_python_initialized()
 tensorflow::tf_config()
 
@@ -64,7 +65,8 @@ pam_age <- gam(ped_status ~ s(tend) + age, data = ped_vetu,
 cbind(
     pam = coef(pam_age)["age"],
     pem = coef(pem_age)["age"],
-    cox = coef(cph_age)["age"])
+    cox = coef(cph_age)["age"]
+)
 ```
 
 Extracting the useful stuff from the PEM 
@@ -101,12 +103,7 @@ smooth_out_reg <- smooth_input %>%
     units = 1, activation = "linear", use_bias = FALSE, name = "smooth_effect",
     kernel_regularizer = function(x) {
       k_mean(k_batch_dot(x,
-        k_dot(
-          tensorflow::tf$constant(pam_Slambda, dtype = "float32"),
-          x
-        ),
-      axes = 2
-      ))
+        k_dot(tensorflow::tf$constant(pam_Slambda, dtype = "float32"), x), axes = 2))
     }
   )
 
@@ -124,14 +121,41 @@ pam_nn <- keras_model(
 
 ## Model Compilation + Fit
 
-Not sure about loss and target yet, gotta do risk set thinking
+Not sure about loss and target yet, gotta do risk set thinking (`X_pad` and `sample_weight` and `sample_weight_mode`)
 
-```{r pam-nn-fit, eval = FALSE}
+Also not sure how to `offset`
+
+### `X_pad` (NYI)
+
+One row per $\text{subject id} \times \text{unique interval}$, with 1 indicating presence in the respective risk set?
+Using `tend` as interval identifier because that's thwe variable we used for the pem?
+
+`keras` docs not doing me any favors wrt the proper format.
+
+```{r X-pad}
+X_pad <- right_join(
+  ped_vetu %>%
+    select(id, tend) %>%
+    mutate(weight = 1),
+  ped_vetu %>%
+    tidyr::expand(id, tend)
+) %>%
+  mutate(weight = ifelse(is.na(weight), 0, weight))
+
+# quick glance and random intervals of id 1
+X_pad %>%
+  filter(id == 1) %>%
+  sample_n(5)
+```
+
+
+```{r pam-nn-fit, eval=TRUE}
 pam_nn %>%
   compile(
-    loss = "poisson", 
     optimizer = optimizer_adam(),
-    metrics = "mae"
+    metrics = "mae",
+    #sample_weights = X_pad,
+    loss = "poisson"
   )
 
 pam_nn
@@ -140,15 +164,23 @@ history <- pam_nn %>%
   fit(
     # linear effect for age, smooth effect of tend via model matrix
     x = list(as.matrix(ped_vetu[, "age"]), pam_modelmat_smooth),
-    y =  ,
-    epochs = 100,
+    y =  ped_vetu$ped_status,
+    epochs = 200,
     batch_size = 32,
     validation_split = 0.2,
+    # sample_weight = "temporal",
     verbose = interactive()
   )
 
 plot(history)
 
 get_weights(pam_nn)
+
+# Reference coefs from PAM
+list(
+  coef(pam_age)[1],
+  coef(pam_age)[2],
+  as.matrix(coef(pam_age)[-c(1,2)])
+)
 ```
 

@@ -242,7 +242,7 @@ div.tocify {
 
 <h1 class="title toc-ignore">pamtools</h1>
 <h4 class="author">Lukas</h4>
-<h4 class="date">2021-06-22 12:53:01</h4>
+<h4 class="date">2021-06-22 14:48:03</h4>
 
 </div>
 
@@ -261,7 +261,8 @@ library(broom)
 library(ggplot2)
 
 # Sacrificing a goat to the python env
-reticulate::use_condaenv(&quot;r-reticulate&quot;, required = TRUE)
+#reticulate::use_condaenv(&quot;r-reticulate&quot;, required = TRUE)
+reticulate::use_condaenv(&quot;renv/python/r-reticulate/bin/python&quot;)
 reticulate:::ensure_python_initialized()
 tensorflow::tf_config()</code></pre>
 <pre><code>## TensorFlow v2.5.0 (~/repos/github/jemus42/DeepPAM/renv/python/r-reticulate/lib/python3.6/site-packages/tensorflow)
@@ -295,7 +296,8 @@ pam_age &lt;- gam(ped_status ~ s(tend) + age, data = ped_vetu,
 cbind(
     pam = coef(pam_age)[&quot;age&quot;],
     pem = coef(pem_age)[&quot;age&quot;],
-    cox = coef(cph_age)[&quot;age&quot;])</code></pre>
+    cox = coef(cph_age)[&quot;age&quot;]
+)</code></pre>
 <pre><code>##             pam         pem         cox
 ## age 0.007543308 0.006413903 0.006413903</code></pre>
 <p>Extracting the useful stuff from the PEM</p>
@@ -327,12 +329,7 @@ smooth_out_reg &lt;- smooth_input %&gt;%
     units = 1, activation = &quot;linear&quot;, use_bias = FALSE, name = &quot;smooth_effect&quot;,
     kernel_regularizer = function(x) {
       k_mean(k_batch_dot(x,
-        k_dot(
-          tensorflow::tf$constant(pam_Slambda, dtype = &quot;float32&quot;),
-          x
-        ),
-      axes = 2
-      ))
+        k_dot(tensorflow::tf$constant(pam_Slambda, dtype = &quot;float32&quot;), x), axes = 2))
     }
   )
 
@@ -348,30 +345,123 @@ pam_nn &lt;- keras_model(
 )</code></pre>
 <div id="model-compilation-fit" class="section level2" number="2.1">
 <h2><span class="header-section-number">2.1</span> Model Compilation + Fit</h2>
-<p>Not sure about loss and target yet, gotta do risk set thinking</p>
+<p>Not sure about loss and target yet, gotta do risk set thinking (<code>X_pad</code> and <code>sample_weight</code> and <code>sample_weight_mode</code>)</p>
+<p>Also not sure how to <code>offset</code></p>
+<div id="x_pad-nyi" class="section level3" number="2.1.1">
+<h3><span class="header-section-number">2.1.1</span> <code>X_pad</code> (NYI)</h3>
+<p>One row per <span class="math inline">\(\text{subject id} \times \text{unique interval}\)</span>, with 1 indicating presence in the respective risk set? Using <code>tend</code> as interval identifier because that’s thwe variable we used for the pem?</p>
+<p><code>keras</code> docs not doing me any favors wrt the proper format.</p>
+<pre class="r"><code>X_pad &lt;- right_join(
+  ped_vetu %&gt;%
+    select(id, tend) %&gt;%
+    mutate(weight = 1),
+  ped_vetu %&gt;%
+    tidyr::expand(id, tend)
+) %&gt;%
+  mutate(weight = ifelse(is.na(weight), 0, weight))
+
+# quick glance and random intervals of id 1
+X_pad %&gt;%
+  filter(id == 1) %&gt;%
+  sample_n(5)</code></pre>
+<pre><code>## # A tibble: 5 x 3
+##      id  tend weight
+##   &lt;int&gt; &lt;dbl&gt;  &lt;dbl&gt;
+## 1     1   133      0
+## 2     1   357      0
+## 3     1    53      1
+## 4     1     1      1
+## 5     1   378      0</code></pre>
 <pre class="r"><code>pam_nn %&gt;%
   compile(
-    loss = &quot;poisson&quot;, 
     optimizer = optimizer_adam(),
-    metrics = &quot;mae&quot;
+    metrics = &quot;mae&quot;,
+    #sample_weights = X_pad,
+    loss = &quot;poisson&quot;
   )
 
-pam_nn
-
-history &lt;- pam_nn %&gt;%
+pam_nn</code></pre>
+<pre><code>## Model
+## Model: &quot;model&quot;
+## ________________________________________________________________________________
+## Layer (type)              Output Shape      Param #  Connected to               
+## ================================================================================
+## linear_in (InputLayer)    [(None, 1)]       0                                   
+## ________________________________________________________________________________
+## smooth_in (InputLayer)    [(None, 9)]       0                                   
+## ________________________________________________________________________________
+## linear_effect (Dense)     (None, 1)         2        linear_in[0][0]            
+## ________________________________________________________________________________
+## smooth_effect (Dense)     (None, 1)         9        smooth_in[0][0]            
+## ________________________________________________________________________________
+## add (Add)                 (None, 1)         0        linear_effect[0][0]        
+##                                                      smooth_effect[0][0]        
+## ________________________________________________________________________________
+## output (Activation)       (None, 1)         0        add[0][0]                  
+## ================================================================================
+## Total params: 11
+## Trainable params: 11
+## Non-trainable params: 0
+## ________________________________________________________________________________</code></pre>
+<pre class="r"><code>history &lt;- pam_nn %&gt;%
   fit(
     # linear effect for age, smooth effect of tend via model matrix
     x = list(as.matrix(ped_vetu[, &quot;age&quot;]), pam_modelmat_smooth),
-    y =  ,
-    epochs = 100,
+    y =  ped_vetu$ped_status,
+    epochs = 200,
     batch_size = 32,
     validation_split = 0.2,
+    # sample_weight = &quot;temporal&quot;,
     verbose = interactive()
   )
 
-plot(history)
-
-get_weights(pam_nn)</code></pre>
+plot(history)</code></pre>
+<p><img src="pamtools_files/figure-html/pam-nn-fit-1.png" width="672" /></p>
+<pre class="r"><code>get_weights(pam_nn)</code></pre>
+<pre><code>## [[1]]
+##            [,1]
+## [1,] 0.08814956
+## 
+## [[2]]
+## [1] -0.2962492
+## 
+## [[3]]
+##             [,1]
+##  [1,]  0.2235651
+##  [2,] -0.3346148
+##  [3,] -0.3869227
+##  [4,]  0.3255725
+##  [5,] -0.7140702
+##  [6,] -0.3107129
+##  [7,]  0.3493645
+##  [8,] -0.4575109
+##  [9,] -0.5391268</code></pre>
+<pre class="r"><code># Reference coefs from PAM
+list(
+  coef(pam_age)[1],
+  coef(pam_age)[2],
+  as.matrix(coef(pam_age)[-c(1,2)])
+)</code></pre>
+<pre><code>## [[1]]
+## (Intercept) 
+##   -5.420252 
+## 
+## [[2]]
+##         age 
+## 0.007543308 
+## 
+## [[3]]
+##                    [,1]
+## s(tend).1  5.363744e-06
+## s(tend).2 -2.013694e-05
+## s(tend).3  2.742932e-05
+## s(tend).4 -2.054418e-05
+## s(tend).5  2.522479e-05
+## s(tend).6 -2.681590e-05
+## s(tend).7 -2.600768e-05
+## s(tend).8  1.590160e-04
+## s(tend).9 -6.838869e-02</code></pre>
+</div>
 </div>
 </div>
 
