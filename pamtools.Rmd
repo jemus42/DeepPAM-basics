@@ -27,8 +27,7 @@ library(broom)
 library(ggplot2)
 
 # Sacrificing a goat to the python env
-#reticulate::use_condaenv("r-reticulate", required = TRUE)
-reticulate::use_condaenv("renv/python/r-reticulate/bin/python")
+reticulate::use_condaenv("deeppamm", required = TRUE)
 reticulate:::ensure_python_initialized()
 tensorflow::tf_config()
 
@@ -38,8 +37,8 @@ library(survival)
 
 # data("veteran", package = "survival") # load veteran data
 veteran <- survival::veteran
-
 ```
+
 # Data + Model Setup
 
 Reference models from <https://adibender.github.io/pammtools/articles/basics.html#subset-with-unique-event-times> and <https://adibender.github.io/pammtools/articles/basics.html#piece-wise-exponential-additive-model>.
@@ -128,7 +127,7 @@ Also not sure how to `offset`
 ### `X_pad` (NYI)
 
 One row per $\text{subject id} \times \text{unique interval}$, with 1 indicating presence in the respective risk set?
-Using `tend` as interval identifier because that's thwe variable we used for the pem?
+Using `tend` as interval identifier because that's the variable we used for the pem?
 
 `keras` docs not doing me any favors wrt the proper format.
 
@@ -148,6 +147,7 @@ X_pad %>%
   sample_n(5)
 ```
 
+### Network fitting
 
 ```{r pam-nn-fit, eval=TRUE}
 pam_nn %>%
@@ -165,7 +165,7 @@ history <- pam_nn %>%
     # linear effect for age, smooth effect of tend via model matrix
     x = list(as.matrix(ped_vetu[, "age"]), pam_modelmat_smooth),
     y =  ped_vetu$ped_status,
-    epochs = 200,
+    epochs = 500,
     batch_size = 32,
     validation_split = 0.2,
     # sample_weight = "temporal",
